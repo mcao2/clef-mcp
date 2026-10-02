@@ -36,16 +36,16 @@ No config file — the endpoint is selected by environment variables at startup:
 
 | Env var | Mode | Meaning |
 |---------|------|---------|
-| `CLEF_BASE_URL` | proxy | URL to POST `{model, state, questions}` to, e.g. `http://localhost:8317/v1/ai/run` |
-| `CLEF_API_KEY` | proxy | Bearer key for that URL |
+| `CLEF_BASE_URL` | proxy | URL to POST `{model, state, questions}` to; optional `{model}` placeholder selects `clef` or `clef-flash` per call |
+| `CLEF_API_KEY` | proxy | Optional bearer key for that URL; omit when the proxy supplies upstream authentication |
 | `CLOUDFLARE_ACCOUNT_ID` | direct | Cloudflare account ID (wrangler-standard name) |
 | `CLOUDFLARE_API_TOKEN` | direct | Cloudflare API token (wrangler-standard name) |
 
-- **`CLEF_BASE_URL` set → proxy mode.** One fixed endpoint; `model` is resolved server-side by the proxy.
+- **`CLEF_BASE_URL` set → proxy mode.** Uses that endpoint, replacing `{model}` when present. Template models must be `clef` or `clef-flash`. Without a placeholder, the proxy resolves the body `model`.
 - **`CLEF_BASE_URL` unset → direct mode.** URL built per call: `https://api.cloudflare.com/client/v4/accounts/<CLOUDFLARE_ACCOUNT_ID>/ai/run/@cf/cloudflare/<model>`; body `model` must be the bare name (`clef` | `clef-flash`).
 - Direct mode: use a least-privilege API token with only the **Workers AI** permission.
 
-Both modes send the same body and return the same envelope; the server unwraps `{result: {answers, usage}}`. The active route is embedded in the tool description at runtime, so agents always see where requests go.
+Both modes send the same body. Responses may be the REST envelope `{result: {answers, usage}}` or the native Workers AI result `{answers, usage}`. The active route is embedded in the tool description at runtime, so agents always see where requests go.
 
 ## Registering
 
@@ -87,6 +87,7 @@ Direct mode in any harness: drop the `CLEF_*` vars, set `CLOUDFLARE_ACCOUNT_ID` 
 ## Test
 
 ```sh
+python3 test_proxy.py   # offline proxy routing, response formats, and credentials
 python3 smoke_test.py   # handshake, metadata, error codes, batch, live call
 ```
 

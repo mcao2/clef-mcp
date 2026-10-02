@@ -6,9 +6,9 @@ Tool: clef_decide(state, questions, model?) -> probability-weighted answers.
 Routing (env-selected):
 - Cloudflare Workers AI via a proxy endpoint (e.g. /v1/ai/run):
     CLEF_BASE_URL=http://localhost:8317/v1/ai/run
-    CLEF_API_KEY=<proxy api key>
-  Body {model, state, questions} is forwarded as-is; "model" is the
-  provider-configured alias.
+    CLEF_API_KEY=<proxy api key>             (optional if proxy handles auth)
+  Body {model, state, questions} is forwarded as-is. The URL may contain
+  {model}, replaced with clef or clef-flash for each call.
 - Cloudflare Workers AI direct API (when CLEF_BASE_URL is unset):
     CLOUDFLARE_ACCOUNT_ID=<account id>       (wrangler-standard naming)
     CLOUDFLARE_API_TOKEN=<cf api token>       (wrangler-standard naming;
@@ -76,22 +76,24 @@ def routing():
 def build_request(model, state, questions, images=None):
     mode, base, key = routing()
     if mode == "custom":
-        url = base
+        if "{model}" in base and model not in ("clef", "clef-flash"):
+            raise RuntimeError("model must be clef or clef-flash")
+        url = base.replace("{model}", model)
     else:
         if not base:
             raise RuntimeError("direct mode requires CLOUDFLARE_ACCOUNT_ID")
         url = ("https://api.cloudflare.com/client/v4/accounts/"
                f"{base}/ai/run/@cf/cloudflare/{model}")
-    if not key:
-        raise RuntimeError("missing API key (CLEF_API_KEY for proxy mode, "
-                           "CLOUDFLARE_API_TOKEN for direct mode)")
+    if not key and mode == "cloudflare":
+        raise RuntimeError("direct mode requires CLOUDFLARE_API_TOKEN")
     body = {"model": model, "state": state, "questions": questions}
     if images:
         body["images"] = images
     req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                  method="POST")
     req.add_header("Content-Type", "application/json")
-    req.add_header("Authorization", f"Bearer {key}")
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
     return req
 
 
@@ -101,7 +103,7 @@ def routing_note():
         return f"Cloudflare Workers AI (via {base})"
     if base:
         return f"Cloudflare Workers AI (account {base}, direct API)"
-    return ("MISCONFIGURED: set CLEF_BASE_URL + CLEF_API_KEY (proxy mode), "
+    return ("MISCONFIGURED: set CLEF_BASE_URL (proxy mode), "
             "or CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN (direct mode)")
 
 
@@ -259,7 +261,7 @@ def handle_call(rid, params):
     if payload.get("success") is False or payload.get("errors"):
         return tool_result(rid, json.dumps({"errors": payload.get("errors")}),
                            is_error=True)
-    result = payload.get("result") or {}
+    result = payload.get("result") or payload
     out = {"answers": result.get("answers"),
            "usage": result.get("usage", {})}
     return tool_result(rid, json.dumps(out), structured=out)
