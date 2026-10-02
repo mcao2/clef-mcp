@@ -10,13 +10,15 @@ Clef takes a `state` and a schema of typed `questions`, and returns a probabilit
 clef_decide(state, questions, model?)
 ```
 
-Question types (batch all into one call):
+Question types (1–64 per call; ids: letters, digits, `_`, `.`, `-`, max 100 chars; batch all into one call):
 
-| Type | Extra fields | Returns |
-|------|-------------|---------|
-| `noul` | — | `noul` = P(yes) |
-| `choice` | `criteria: {label: description}` | `choice`, `probabilities`, `confidence` |
-| `score` | `criteria: [lowest … highest]` | `score` (probability-weighted index, 0 = lowest) |
+| Type | Required | Optional | Returns |
+|------|----------|----------|---------|
+| `noul` | `instructions` | `criteria: {"true": "…", "false": "…"}` | `noul` = P(yes) |
+| `choice` | `instructions`, `criteria: {option: description}` (2–255 options) | — | `choice`, `probabilities`, `confidence` |
+| `score` | `instructions`, `criteria: [lowest … highest]` (2–10 levels) | — | `score` (probability-weighted index), `probabilities`, `confidence` |
+
+`state` may be a string or structured data (records, chat logs, app state); long text is truncated to the model's token limit (65,536). Optional `images` (1–4, PNG/JPEG/WebP as data URLs or `{content_type, base64}`) are placed before the state for vision evaluation.
 
 ```json
 {"state": "Checkout failing for every customer for the last hour.",

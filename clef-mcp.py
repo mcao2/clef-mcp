@@ -33,14 +33,25 @@ SERVER_VERSION = "1.1.0"
 DEFAULT_MODEL = "clef"
 HTTP_TIMEOUT = int(os.environ.get("CLEF_HTTP_TIMEOUT", "30"))
 
-QUESTION_DOC = """Schema: questions maps a question name to its definition.
-- type "noul": yes/no probability. -> answers.<name>.noul = P(yes)
-- type "choice": classification. Add "criteria": {label: description}.
-  -> answers.<name>.choice = picked label, .probabilities = per-label, .confidence
-- type "score": ordinal rating. Add "criteria": [lowest ... highest].
-  -> answers.<name>.score = probability-weighted index (0 = lowest)
-Every question needs "instructions". Batch all questions for one state into
-a single call. Example:
+QUESTION_DOC = """Schema (official Cloudflare contract): questions maps a
+question id (letters, digits, '_', '.', '-', max 100 chars) to a typed
+question. 1 to 64 questions per call; answers are returned under the
+same ids. "instructions" is a non-empty string, or an object/array
+holding the question in one field and referenced data in others.
+- type "noul" (yes/no): required "instructions"; optional "criteria":
+  {"true": "what a yes means", "false": "what a no means"}.
+  -> answers.<id>.noul = P(yes)
+- type "choice" (classification): required "instructions" and
+  "criteria": {option: description} with 2-255 options (description may
+  be string, object, array, or null).
+  -> answers.<id>.choice = picked option, .probabilities = per option,
+     .confidence
+- type "score" (ordinal rating): required "instructions" and
+  "criteria": ordered array of 2-10 level descriptions, lowest first
+  (levels indexed from 0).
+  -> answers.<id>.score = probability-weighted index, .probabilities
+     per level, .confidence
+Batch all questions about one state into a single call. Example:
 {"urgent": {"type": "noul", "instructions": "Is this request urgent?"},
  "team": {"type": "choice", "instructions": "Which team handles this?",
           "criteria": {"billing": "Payments", "technical": "Outages"}}}"""
@@ -62,7 +73,7 @@ def routing():
     return "cloudflare", account, token
 
 
-def build_request(model, state, questions):
+def build_request(model, state, questions, images=None):
     mode, base, key = routing()
     if mode == "custom":
         url = base
@@ -74,9 +85,11 @@ def build_request(model, state, questions):
     if not key:
         raise RuntimeError("missing API key (CLEF_API_KEY for proxy mode, "
                            "CLOUDFLARE_API_TOKEN for direct mode)")
-    body = json.dumps({"model": model, "state": state,
-                       "questions": questions}).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
+    body = {"model": model, "state": state, "questions": questions}
+    if images:
+        body["images"] = images
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Authorization", f"Bearer {key}")
     return req
@@ -109,19 +122,43 @@ def tool_def():
             "properties": {
                 "state": {
                     "type": ["string", "object", "array"],
-                    "description": "The situation to decide on: any text, "
-                                   "JSON, or multimodal content parts. "
-                                   "Include all relevant context.",
+                    "description": "The situation to decide on: any text, or "
+                                   "structured data (object/array) such as "
+                                   "records, chat logs, or application state. "
+                                   "Long text is truncated to the model's "
+                                   "token limit (65,536).",
                 },
                 "questions": {
                     "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 64,
                     "description": QUESTION_DOC,
                 },
                 "model": {
                     "type": "string",
+                    "enum": ["clef", "clef-flash"],
                     "description": "clef (default) or clef-flash (faster/"
                                    "cheaper, for high-volume low-stakes "
                                    "decisions).",
+                },
+                "images": {
+                    "type": "array",
+                    "maxItems": 4,
+                    "description": "Optional images placed before the state "
+                                   "for vision evaluation: PNG, JPEG, or "
+                                   "WebP, each a data URL (data:image/png;"
+                                   "base64,...) or {content_type, base64}. "
+                                   "Max 4 MiB and 16 megapixels per image, "
+                                   "8 MiB total decoded, 13 MiB request "
+                                   "body. Remote URLs are not accepted.",
+                    "items": {"anyOf": [
+                        {"type": "string",
+                         "pattern": "^[Dd][Aa][Tt][Aa]:"},
+                        {"type": "object",
+                         "properties": {"content_type": {"type": "string"},
+                                         "base64": {"type": "string"}},
+                         "required": ["content_type", "base64"]},
+                    ]},
                 },
             },
             "required": ["state", "questions"],
@@ -183,6 +220,7 @@ def handle_call(rid, params):
         args = {}
     state = args.get("state")
     questions = args.get("questions")
+    images = args.get("images")
     model = args.get("model") or DEFAULT_MODEL
     if not isinstance(model, str) or not model.strip():
         model = DEFAULT_MODEL
@@ -191,8 +229,18 @@ def handle_call(rid, params):
     if not isinstance(questions, dict) or not questions:
         return tool_result(rid, "questions must be a non-empty object",
                            is_error=True)
+    if len(questions) > 64:
+        return tool_result(rid, "questions accepts at most 64 items",
+                           is_error=True)
+    if images is not None:
+        if not isinstance(images, list) or not images:
+            return tool_result(rid, "images must be a non-empty array when "
+                               "provided", is_error=True)
+        if len(images) > 4:
+            return tool_result(rid, "images accepts at most 4 items",
+                               is_error=True)
     try:
-        req = build_request(model, state, questions)
+        req = build_request(model, state, questions, images)
     except RuntimeError as exc:
         return tool_result(rid, f"config error: {exc}", is_error=True)
     debug(f"call model={model} questions={sorted(questions)}")

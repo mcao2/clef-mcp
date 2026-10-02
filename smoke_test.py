@@ -64,12 +64,19 @@ def main():
         send(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = recv(proc)["result"]["tools"]
         tool = tools[0]
+        schema = tool["inputSchema"]
         check("one tool named clef_decide", tool["name"] == "clef_decide")
         check("annotations present",
               tool.get("annotations", {}).get("readOnlyHint") is True,
               str(tool.get("annotations")))
         check("outputSchema present", "answers" in tool.get("outputSchema", {}).get("required", []))
         check("title present", tool.get("title") == "Clef decide")
+        check("questions limit 1-64 declared",
+              schema["properties"]["questions"].get("maxProperties") == 64)
+        check("model enum clef/clef-flash",
+              schema["properties"]["model"].get("enum") == ["clef", "clef-flash"])
+        check("images param declared (max 4)",
+              schema["properties"]["images"].get("maxItems") == 4)
 
         print("error contract:")
         send(proc, {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
